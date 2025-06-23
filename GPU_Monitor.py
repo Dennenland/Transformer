@@ -1,29 +1,38 @@
 import subprocess
-import json
 import time
 import threading
 import signal
 import sys
+import os
 from datetime import datetime
+from collections import deque
 
 class GPUMonitor:
-    def __init__(self, update_interval=2):
+    def __init__(self, update_interval=0.5):  # Much faster updates
         self.update_interval = update_interval
         self.monitoring = False
         self.max_vram_used = 0
         self.max_gpu_util = 0
+        self.vram_history = deque(maxlen=120)  # 1 minute of history at 0.5s intervals
+        self.gpu_util_history = deque(maxlen=120)
+        self.temp_history = deque(maxlen=120)
+        self.power_history = deque(maxlen=120)
+        self.start_time = None
+        
+    def clear_screen(self):
+        """Clear the console screen"""
+        os.system('cls' if os.name == 'nt' else 'clear')
         
     def get_gpu_info(self):
         """Get GPU information using nvidia-smi"""
         try:
-            # Query GPU information in JSON format
             cmd = [
                 'nvidia-smi', 
-                '--query-gpu=index,name,memory.total,memory.used,memory.free,utilization.gpu,temperature.gpu,power.draw',
+                '--query-gpu=index,name,memory.total,memory.used,memory.free,utilization.gpu,utilization.memory,temperature.gpu,power.draw,power.limit',
                 '--format=csv,noheader,nounits'
             ]
             
-            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+            result = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=5)
             lines = result.stdout.strip().split('\n')
             
             gpu_info = []
@@ -37,136 +46,130 @@ class GPUMonitor:
                         'memory_used': int(parts[3]),
                         'memory_free': int(parts[4]),
                         'gpu_util': int(parts[5]) if parts[5] != '[Not Supported]' else 0,
-                        'temperature': int(parts[6]) if parts[6] != '[Not Supported]' else 0,
-                        'power_draw': float(parts[7]) if parts[7] != '[Not Supported]' else 0
+                        'memory_util': int(parts[6]) if len(parts) > 6 and parts[6] != '[Not Supported]' else 0,
+                        'temperature': int(parts[7]) if parts[7] != '[Not Supported]' else 0,
+                        'power_draw': float(parts[8]) if len(parts) > 8 and parts[8] != '[Not Supported]' else 0,
+                        'power_limit': float(parts[9]) if len(parts) > 9 and parts[9] != '[Not Supported]' else 0
                     }
                     gpu_info.append(gpu_data)
             
             return gpu_info
             
-        except subprocess.CalledProcessError:
-            print("Error: nvidia-smi not found or GPU not accessible")
-            return []
         except Exception as e:
-            print(f"Error getting GPU info: {e}")
             return []
     
-    def display_gpu_status(self, gpu_info):
-        """Display formatted GPU information"""
-        timestamp = datetime.now().strftime("%H:%M:%S")
-        print(f"\n{'='*60}")
-        print(f"GPU Status Update - {timestamp}")
-        print(f"{'='*60}")
+    def create_bar(self, percentage, width=30):
+        """Create a visual progress bar"""
+        filled = int(width * percentage / 100)
+        bar = '█' * filled + '░' * (width - filled)
+        return f"[{bar}] {percentage:5.1f}%"
+    
+    def get_trend_indicator(self, history):
+        """Get trend indicator based on recent history"""
+        if len(history) < 10:
+            return "─"
         
-        for gpu in gpu_info:
+        recent = list(history)[-10:]
+        older = list(history)[-20:-10] if len(history) >= 20 else recent[:5]
+        
+        recent_avg = sum(recent) / len(recent)
+        older_avg = sum(older) / len(older)
+        
+        if recent_avg > older_avg + 2:
+            return "↗"
+        elif recent_avg < older_avg - 2:
+            return "↘"
+        else:
+            return "→"
+    
+    def get_utilization_status(self, vram_percent, gpu_util):
+        """Get optimization recommendations"""
+        if vram_percent < 30:
+            return "🟢 LOW - Increase batch size significantly", "Can increase batch size by 50-100%"
+        elif vram_percent < 50:
+            return "🟡 MODERATE - Can increase batch size", "Try increasing batch size by 25-50%"
+        elif vram_percent < 70:
+            return "🟠 GOOD - Reasonable utilization", "Small batch size increases possible"
+        elif vram_percent < 85:
+            return "🔵 OPTIMAL - Well utilized", "Current settings are good"
+        elif vram_percent < 95:
+            return "🟠 HIGH - Monitor closely", "Consider reducing batch size slightly"
+        else:
+            return "🔴 CRITICAL - Reduce immediately", "Reduce batch size to avoid OOM errors"
+    
+    def display_gpu_status(self, gpu_info):
+        """Display comprehensive GPU information with live updates"""
+        if not gpu_info:
+            return
+            
+        self.clear_screen()
+        
+        # Header
+        runtime = ""
+        if self.start_time:
+            elapsed = time.time() - self.start_time
+            hours, remainder = divmod(int(elapsed), 3600)
+            minutes, seconds = divmod(remainder, 60)
+            runtime = f" | Runtime: {hours:02d}:{minutes:02d}:{seconds:02d}"
+        
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        print(f"{'='*80}")
+        print(f"🚀 REAL-TIME GPU MONITOR - {timestamp}{runtime}")
+        print(f"{'='*80}")
+        
+        for i, gpu in enumerate(gpu_info):
             vram_percent = (gpu['memory_used'] / gpu['memory_total']) * 100
+            power_percent = (gpu['power_draw'] / gpu['power_limit']) * 100 if gpu['power_limit'] > 0 else 0
+            
+            # Update history
+            self.vram_history.append(vram_percent)
+            self.gpu_util_history.append(gpu['gpu_util'])
+            self.temp_history.append(gpu['temperature'])
+            self.power_history.append(power_percent)
             
             # Update maximums
             self.max_vram_used = max(self.max_vram_used, vram_percent)
             self.max_gpu_util = max(self.max_gpu_util, gpu['gpu_util'])
             
-            print(f"GPU {gpu['index']}: {gpu['name']}")
-            print(f"  VRAM: {gpu['memory_used']}MB / {gpu['memory_total']}MB ({vram_percent:.1f}%)")
-            print(f"  GPU Utilization: {gpu['gpu_util']}%")
-            print(f"  Temperature: {gpu['temperature']}°C")
-            print(f"  Power Draw: {gpu['power_draw']}W")
+            status, recommendation = self.get_utilization_status(vram_percent, gpu['gpu_util'])
             
-            # VRAM usage warnings
-            if vram_percent > 95:
-                print(f"  ⚠️  WARNING: VRAM usage critical!")
-            elif vram_percent > 85:
-                print(f"  ⚠️  CAUTION: High VRAM usage")
-            elif vram_percent > 70:
-                print(f"  ℹ️  INFO: Moderate VRAM usage")
+            print(f"\n🎯 GPU {gpu['index']}: {gpu['name']}")
+            print(f"{'─'*80}")
             
-            print()
-        
-        print(f"Session Maximums:")
-        print(f"  Peak VRAM Usage: {self.max_vram_used:.1f}%")
-        print(f"  Peak GPU Utilization: {self.max_gpu_util}%")
-    
-    def monitor_loop(self):
-        """Main monitoring loop"""
-        print("Starting GPU monitoring... Press Ctrl+C to stop")
-        print("=" * 60)
-        
-        while self.monitoring:
-            gpu_info = self.get_gpu_info()
-            if gpu_info:
-                self.display_gpu_status(gpu_info)
-            else:
-                print("No GPU information available")
+            # VRAM Usage
+            vram_trend = self.get_trend_indicator(self.vram_history)
+            print(f"💾 VRAM Usage: {self.create_bar(vram_percent)} {vram_trend}")
+            print(f"   Used: {gpu['memory_used']:,}MB / {gpu['memory_total']:,}MB")
+            print(f"   Free: {gpu['memory_free']:,}MB")
             
-            time.sleep(self.update_interval)
-    
-    def start_monitoring(self):
-        """Start monitoring in a separate thread"""
-        self.monitoring = True
-        self.monitor_thread = threading.Thread(target=self.monitor_loop)
-        self.monitor_thread.daemon = True
-        self.monitor_thread.start()
-    
-    def stop_monitoring(self):
-        """Stop monitoring"""
-        self.monitoring = False
-        if hasattr(self, 'monitor_thread'):
-            self.monitor_thread.join(timeout=1)
-    
-    def get_optimal_batch_size_suggestion(self):
-        """Suggest optimal batch size based on current VRAM usage"""
-        gpu_info = self.get_gpu_info()
-        if not gpu_info:
-            return "Cannot determine - no GPU info available"
+            # GPU Utilization
+            gpu_trend = self.get_trend_indicator(self.gpu_util_history)
+            print(f"⚡ GPU Compute: {self.create_bar(gpu['gpu_util'])} {gpu_trend}")
+            
+            # Temperature
+            temp_trend = self.get_trend_indicator(self.temp_history)
+            temp_color = "🔥" if gpu['temperature'] > 80 else "🌡️"
+            print(f"{temp_color} Temperature: {self.create_bar(gpu['temperature'], width=20)} {temp_trend}")
+            print(f"   Current: {gpu['temperature']}°C")
+            
+            # Power Usage
+            if gpu['power_draw'] > 0:
+                power_trend = self.get_trend_indicator(self.power_history)
+                print(f"⚡ Power Draw: {self.create_bar(power_percent, width=20)} {power_trend}")
+                print(f"   Current: {gpu['power_draw']:.1f}W / {gpu['power_limit']:.1f}W")
+            
+            print(f"\n📊 Status: {status}")
+            print(f"💡 Recommendation: {recommendation}")
+            
+        # Session Statistics
+        print(f"\n{'='*80}")
+        print(f"📈 SESSION STATISTICS")
+        print(f"{'─'*80}")
+        print(f"Peak VRAM Usage: {self.max_vram_used:.1f}%")
+        print(f"Peak GPU Utilization: {self.max_gpu_util:.1f}%")
         
-        # Use first GPU for suggestion
-        gpu = gpu_info[0]
-        vram_used_percent = (gpu['memory_used'] / gpu['memory_total']) * 100
-        
-        if vram_used_percent < 50:
-            return "You can likely increase batch size for better utilization"
-        elif vram_used_percent < 70:
-            return "Good VRAM utilization - consider small batch size increases"
-        elif vram_used_percent < 85:
-            return "Optimal VRAM usage - current batch size seems good"
-        elif vram_used_percent < 95:
-            return "High VRAM usage - consider reducing batch size slightly"
-        else:
-            return "Critical VRAM usage - reduce batch size to avoid OOM errors"
-
-def signal_handler(sig, frame):
-    """Handle Ctrl+C gracefully"""
-    print("\n\nStopping GPU monitor...")
-    sys.exit(0)
-
-def main():
-    # Set up signal handler for graceful exit
-    signal.signal(signal.SIGINT, signal_handler)
-    
-    print("GPU Performance Monitor")
-    print("=" * 30)
-    
-    monitor = GPUMonitor(update_interval=3)  # Update every 3 seconds
-    
-    # Initial GPU check
-    gpu_info = monitor.get_gpu_info()
-    if not gpu_info:
-        print("No NVIDIA GPUs detected or nvidia-smi not available")
-        print("Make sure you have NVIDIA drivers installed and GPU is accessible")
-        input("Press Enter to continue anyway...")
-        return
-    
-    print("Available GPUs:")
-    for gpu in gpu_info:
-        print(f"  GPU {gpu['index']}: {gpu['name']} ({gpu['memory_total']}MB VRAM)")
-    
-    print(f"\nBatch size suggestion: {monitor.get_optimal_batch_size_suggestion()}")
-    
-    try:
-        monitor.monitor_loop()
-    except KeyboardInterrupt:
-        print("\nMonitoring stopped by user")
-    finally:
-        monitor.stop_monitoring()
-
-if __name__ == "__main__":
-    main()
+        if len(self.vram_history) > 10:
+            avg_vram = sum(list(self.vram_history)[-60:]) / min(60, len(self.vram_history))
+            avg_gpu = sum(list(self.gpu_util_history)[-60:]) / min(60, len(self.gpu_util_history))
+            print(f"Average VRAM (last min): {avg_vram:.1f}%")
+            print(f"Average GPU Util (last min): {avg_gpu:.1f}%")
