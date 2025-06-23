@@ -1,9 +1,25 @@
 @echo off
+
+REM =====================================================================
+REM  Step 0: Check for Administrator Privileges and Self-Elevate
+REM =====================================================================
+ECHO Checking for administrator privileges...
+net session >nul 2>&1
+IF %ERRORLEVEL% NEQ 0 (
+    ECHO.
+    ECHO [ERROR] Administrator privileges are required.
+    ECHO Attempting to re-launch this script as an administrator...
+    ECHO Please approve the UAC prompt.
+    powershell -Command "Start-Process -FilePath '%~s0' -Verb RunAs"
+    GOTO :EOF
+)
+ECHO [SUCCESS] Administrator privileges confirmed.
+
+
 ECHO ======================================================
 ECHO  GPU Driver and CUDA Toolkit Setup
 ECHO  This script will check for and install NVIDIA drivers
 ECHO  and the CUDA Toolkit using Chocolatey.
-ECHO  It MUST be run as an Administrator.
 ECHO ======================================================
 ECHO.
 PAUSE
@@ -40,9 +56,9 @@ ECHO.
 
 REM --- Step 3: Install CUDA Toolkit ---
 ECHO [STEP 3] Installing CUDA Toolkit (includes the driver)...
-ECHO This will install CUDA Toolkit v12.4.0 to ensure compatibility with the PyTorch build for CUDA 12.x.
-ECHO The package name is 'cuda-toolkit'. This step can take a significant amount of time. Please be patient.
-choco install cuda-toolkit --version=12.4.0 -y
+ECHO This will install CUDA Toolkit v12.4.1 to ensure compatibility with the PyTorch build for CUDA 12.x.
+ECHO The package name is 'cuda'. This step can take a significant amount of time. Please be patient.
+choco install cuda --version=12.4.1 -y
 
 IF %ERRORLEVEL% NEQ 0 (
     ECHO.
