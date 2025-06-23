@@ -1,52 +1,27 @@
 import pandas as pd
 import torch
-import lightning.pytorch as pl
 from pytorch_forecasting import TimeSeriesDataSet, TemporalFusionTransformer
-from pytorch_forecasting.data import GroupNormalizer, MultiNormalizer
-from pytorch_forecasting.metrics import QuantileLoss, MultiLoss
 from sklearn.metrics import mean_absolute_percentage_error, mean_absolute_error, r2_score
 import warnings
 import os
 import sys
 import glob
 import numpy as np
-from typing import Dict, Any
+
+# --- Import the centralized configuration ---
+from config_loader import config
 
 # --- Suppress pandas PerformanceWarning ---
 warnings.filterwarnings(
     "ignore", "DataFrame is highly fragmented", category=pd.errors.PerformanceWarning
 )
 
-# ======================================================================================
-# --- DEBUG MODE TOGGLE ---
-# This MUST match the setting in the training script.
-# ======================================================================================
-DEBUG_MODE = False # Set to True to run in debug mode
 
 # ======================================================================================
-# --- Configuration ---
+# --- Helper Functions ---
 # ======================================================================================
-CHECKPOINT_DIR = "model_checkpoints"
-LATEST_DATA_FILE = 'Prime 1.csv'
-TIME_COLUMN = 'Datum'
-SERIES_COLUMN = 'Naam'
-TARGET_COLUMNS = [
-    "OrderDag", "OrderUur_0", "OrderUur_1", "OrderUur_2", "OrderUur_3", "OrderUur_4",
-    "OrderUur_5", "OrderUur_6", "OrderUur_7", "OrderUur_8", "OrderUur_9", "OrderUur_10",
-    "OrderUur_11", "OrderUur_12", "OrderUur_13", "OrderUur_14", "OrderUur_15",
-    "OrderUur_16", "OrderUur_17", "OrderUur_18", "OrderUur_19", "OrderUur_20",
-    "OrderUur_21", "OrderUur_22", "OrderUur_23", "Picktime_0", "Picktime_1",
-    "Picktime_2", "Picktime_3", "Picktime_4", "Picktime_5", "Picktime_6", "Picktime_7",
-    "Picktime_8", "Picktime_9", "Picktime_10", "Picktime_11", "Picktime_12",
-    "Picktime_13", "Picktime_14", "Picktime_15", "Picktime_16", "Picktime_17",
-    "Picktime_18", "Picktime_19", "Picktime_20", "Picktime_21", "Picktime_22", "Picktime_23"
-]
-LOOKBACK_WINDOW = 400 if not DEBUG_MODE else 10
-
-# ======================================================================================
-# --- Helper Functions (Unchanged) ---
-# ======================================================================================
-def find_latest_checkpoint(checkpoint_dir=CHECKPOINT_DIR, debug=False):
+def find_latest_checkpoint(checkpoint_dir, debug=False):
+    """Finds the most recent checkpoint file in the given directory."""
     prefix = "debug-model" if debug else "best-model"
     print(f"Searching for the latest '{prefix}' checkpoint in '{checkpoint_dir}'...")
     search_pattern = os.path.join(checkpoint_dir, f'*{prefix}*.ckpt')
@@ -60,6 +35,7 @@ def find_latest_checkpoint(checkpoint_dir=CHECKPOINT_DIR, debug=False):
 
 
 def calculate_metrics(df, group_by_col=None):
+    """Calculates MAE, MAPE, and R2 score, with optional grouping."""
     # This function is unchanged
     metrics_list = []
     df['actual'] = pd.to_numeric(df['actual'], errors='coerce')
@@ -70,26 +46,42 @@ def calculate_metrics(df, group_by_col=None):
             if group_df.empty: continue
             mape_df = group_df[group_df['actual'] != 0]
             r2_val = r2_score(group_df['actual'], group_df['predicted']) if len(group_df) > 1 else np.nan
-            metrics_list.append(
-                {group_by_col: group, 'MAE': mean_absolute_error(group_df['actual'], group_df['predicted']),
-                 'MAPE': mean_absolute_percentage_error(mape_df['actual'],
-                                                        mape_df['predicted']) if not mape_df.empty else np.nan,
-                 'R2': r2_val})
+            metrics_list.append({
+                group_by_col: group,
+                'MAE': mean_absolute_error(group_df['actual'], group_df['predicted']),
+                'MAPE': mean_absolute_percentage_error(mape_df['actual'],
+                                                       mape_df['predicted']) if not mape_df.empty else np.nan,
+                'R2': r2_val
+            })
         return pd.DataFrame(metrics_list).set_index(group_by_col)
     else:
         mape_df = df[df['actual'] != 0]
         r2_val = r2_score(df['actual'], df['predicted']) if len(df) > 1 else np.nan
-        return pd.DataFrame([{'MAE': mean_absolute_error(df['actual'], df['predicted']),
-                              'MAPE': mean_absolute_percentage_error(mape_df['actual'], mape_df[
-                                  'predicted']) if not mape_df.empty else np.nan, 'R2': r2_val}], index=['Overall'])
+        return pd.DataFrame([{
+            'MAE': mean_absolute_error(df['actual'], df['predicted']),
+            'MAPE': mean_absolute_percentage_error(mape_df['actual'],
+                                                   mape_df['predicted']) if not mape_df.empty else np.nan,
+            'R2': r2_val
+        }], index=['Overall'])
 
 
 # ======================================================================================
 # --- Main Evaluation Function ---
 # ======================================================================================
 def evaluate_model():
+    """
+    Main function to load the latest model and evaluate its performance
+    using settings from the centralized config file.
+    """
     print("\n--- Evaluation Script Started ---")
-    latest_checkpoint_path = find_latest_checkpoint(debug=DEBUG_MODE)
+
+    # Unpack config sections for easier access
+    cfg_data = config['data']
+    cfg_model = config['model']
+    cfg_eval = config['evaluation']
+    is_debug = config['DEBUG_MODE']
+
+    latest_checkpoint_path = find_latest_checkpoint(cfg_model['checkpoint_dir'], debug=is_debug)
     if not latest_checkpoint_path:
         sys.exit(1)
 
@@ -99,49 +91,46 @@ def evaluate_model():
         best_tft_model.eval()
         print("   Model loaded successfully.")
 
-        print(f"2. Loading and preparing evaluation data from '{LATEST_DATA_FILE}'...")
-        new_df = pd.read_csv(LATEST_DATA_FILE, sep=';', decimal=',')
-        new_df[TIME_COLUMN] = pd.to_datetime(new_df[TIME_COLUMN])
-        new_df[SERIES_COLUMN] = new_df[SERIES_COLUMN].astype(str).astype("category")
-        min_date = new_df[TIME_COLUMN].min()
-        new_df['time_idx'] = (new_df[TIME_COLUMN] - min_date).dt.days
-        for col in TARGET_COLUMNS:
+        print(f"2. Loading and preparing evaluation data from '{cfg_data['eval_file_path']}'...")
+        new_df = pd.read_csv(cfg_data['eval_file_path'], sep=';', decimal=',')
+        new_df[cfg_data['time_column']] = pd.to_datetime(new_df[cfg_data['time_column']])
+        new_df[cfg_data['series_column']] = new_df[cfg_data['series_column']].astype(str).astype("category")
+        min_date = new_df[cfg_data['time_column']].min()
+        new_df['time_idx'] = (new_df[cfg_data['time_column']] - min_date).dt.days
+        for col in cfg_data['target_columns']:
             new_df[col] = pd.to_numeric(new_df[col], errors='coerce').astype("float32")
-        new_df[TARGET_COLUMNS] = new_df[TARGET_COLUMNS].fillna(0.0)
+        new_df[cfg_data['target_columns']] = new_df[cfg_data['target_columns']].fillna(0.0)
 
         # --- FIX: Apply debug filtering here, before reconstructing the dataset ---
         eval_df = new_df.copy()
-        if DEBUG_MODE:
+        if is_debug:
             print("   Debug Mode: Subsetting data to match training conditions...")
             # This logic must be identical to the trainer's debug mode logic
             max_time_idx = eval_df['time_idx'].max()
             df_for_series_selection = eval_df[eval_df['time_idx'] >= max_time_idx - 50]
-            unique_series = df_for_series_selection[SERIES_COLUMN].unique()[:2]
-            eval_df = eval_df[eval_df[SERIES_COLUMN].isin(unique_series)]
+            unique_series = df_for_series_selection[cfg_data['series_column']].unique()[:2]
+            eval_df = eval_df[eval_df[cfg_data['series_column']].isin(unique_series)]
             print(f"   Evaluating on debug series: {unique_series.tolist()}")
-
 
         print("3a. Reconstructing dataset from model parameters...")
         # Use the (potentially filtered) eval_df
         reference_dataset = TimeSeriesDataSet.from_parameters(
-            best_tft_model.dataset_parameters,
-            eval_df,
+            best_tft_model.dataset_parameters, eval_df
         )
         print("   Reference dataset created.")
 
         print("3b. Identifying valid series for prediction...")
-        series_encoder = reference_dataset.categorical_encoders[SERIES_COLUMN]
+        series_encoder = reference_dataset.categorical_encoders[cfg_data['series_column']]
         valid_series = series_encoder.classes_
         print(f"   Model was trained on {len(valid_series)} unique series. Generating forecasts for these only.")
 
-        # Create the precise input needed for prediction from the filtered eval_df
-        prediction_input_df = eval_df[eval_df[SERIES_COLUMN].isin(valid_series)]
-        prediction_input_df = prediction_input_df.groupby(SERIES_COLUMN).tail(LOOKBACK_WINDOW)
+        prediction_input_df = eval_df[eval_df[cfg_data['series_column']].isin(valid_series)]
+        prediction_input_df = prediction_input_df.groupby(cfg_data['series_column']).tail(cfg_model['lookback_window'])
 
-        print("3c. Generating forecast for the final 7-day period...")
+        print(f"3c. Generating forecast for the next {cfg_model['prediction_horizon']}-day period...")
         predictions = best_tft_model.predict(
             prediction_input_df,
-            trainer_kwargs=dict(accelerator="cpu"),
+            trainer_kwargs=dict(accelerator=cfg_eval['accelerator']),
             mode="raw",
             return_x=True
         )
@@ -149,12 +138,10 @@ def evaluate_model():
         prediction_list = predictions.output['prediction']
         if not prediction_list or prediction_list[0].size(0) == 0:
             print("\n--- WARNING: No predictions were generated. ---")
-            print(
-                "This usually means the evaluation data does not contain any time series that are long enough for the model's lookback window.")
             sys.exit(0)
 
         print("\n4. Reshaping data and calculating metrics...")
-        median_prediction_idx = 3  # Index 3 corresponds to the 0.5 quantile (median)
+        median_prediction_idx = 3
         predicted_values = prediction_list
         actuals_lookup_df = new_df.set_index([cfg_data['series_column'], 'time_idx'])
         results_list = []
