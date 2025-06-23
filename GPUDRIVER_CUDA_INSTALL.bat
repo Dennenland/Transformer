@@ -40,9 +40,9 @@ ECHO.
 
 REM --- Step 3: Install CUDA Toolkit ---
 ECHO [STEP 3] Installing CUDA Toolkit (includes the driver)...
-ECHO This will install CUDA Toolkit v12.4.1 to ensure compatibility with the PyTorch build for CUDA 12.x.
-ECHO This step can take a significant amount of time. Please be patient.
-choco install cuda --version=12.4.1 -y
+ECHO This will install CUDA Toolkit v12.4.0 to ensure compatibility with the PyTorch build for CUDA 12.x.
+ECHO The package name is 'cuda-toolkit'. This step can take a significant amount of time. Please be patient.
+choco install cuda-toolkit --version=12.4.0 -y
 
 IF %ERRORLEVEL% NEQ 0 (
     ECHO.
