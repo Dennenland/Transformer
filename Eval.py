@@ -79,6 +79,7 @@ def evaluate_model():
     cfg_data = config['data']
     cfg_model = config['model']
     cfg_eval = config['evaluation']
+    cfg_train = config['training'] # Needed for batch_size
     is_debug = config['DEBUG_MODE']
 
     latest_checkpoint_path = find_latest_checkpoint(cfg_model['checkpoint_dir'], debug=is_debug)
@@ -101,23 +102,27 @@ def evaluate_model():
             new_df[col] = pd.to_numeric(new_df[col], errors='coerce').astype("float32")
         new_df[cfg_data['target_columns']] = new_df[cfg_data['target_columns']].fillna(0.0)
 
-        # --- REMOVED MANUAL DEBUG SLICING ---
-        # The debug model was trained on the full dataset (with limit_batches=1),
-        # so for evaluation we also use the full dataset to find data for prediction.
         if is_debug:
             print("   Debug Mode: Evaluating model trained on a limited number of batches.")
 
-
         print("3a. Reconstructing dataset from model parameters...")
-        # Use the full dataframe for reconstruction
+        # Use the full dataframe for reconstruction. The dataloader will handle filtering.
         reference_dataset = TimeSeriesDataSet.from_parameters(
             best_tft_model.dataset_parameters, new_df
         )
         print("   Reference dataset created.")
 
+        # --- ROBUST PREDICTION LOGIC ---
+        # Create a dataloader for prediction. This is more efficient and robust
+        # as it automatically handles filtering out series that are too short.
+        prediction_dataloader = reference_dataset.to_dataloader(
+            train=False,
+            batch_size=cfg_train['val_batch_size'] * 2 # Use a larger batch size for inference
+        )
+
         print(f"3b. Generating forecast for the next {cfg_model['prediction_horizon']}-day period...")
         predictions = best_tft_model.predict(
-            reference_dataset,
+            prediction_dataloader, # <-- Pass the dataloader
             trainer_kwargs=dict(accelerator=cfg_eval['accelerator']),
             mode="raw",
             return_x=True
@@ -134,7 +139,8 @@ def evaluate_model():
         actuals_lookup_df = new_df.set_index([cfg_data['series_column'], 'time_idx'])
         results_list = []
 
-        index_df = reference_dataset.x_to_index(predictions.x)
+        # The x_to_index needs the dataloader, not the dataset, when using a dataloader for prediction
+        index_df = prediction_dataloader.dataset.x_to_index(predictions.x)
         names = index_df[cfg_data['series_column']]
         last_encoder_time_idx = index_df['time_idx']
 
