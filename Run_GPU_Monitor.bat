@@ -8,7 +8,7 @@ ECHO ======================================================
 
 ECHO.
 ECHO ======================================================
-ECHO  ACTIVATING VIRTUAL ENVIRONMENT & STARTING MONITOR
+ECHO  ACTIVATING VIRTUAL ENVIRONMENT ^& STARTING MONITOR
 ECHO ======================================================
 CALL .\.venv\Scripts\activate.bat
 python GPU_Monitor.py
