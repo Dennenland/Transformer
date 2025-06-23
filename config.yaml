@@ -1,0 +1,193 @@
+# ======================================================================================
+# --- Global Settings ---
+# ======================================================================================
+# Master switch for debugging. If true, uses smaller datasets and model sizes
+# for faster testing runs. This is the most important switch for quick tests.
+DEBUG_MODE: False
+
+# ======================================================================================
+# --- Data & Feature Engineering ---
+# ======================================================================================
+data:
+  # Path to the CSV file used for TRAINING the model.
+  train_file_path: 'Prime 1.csv'
+  
+  # Path to the CSV file used for EVALUATION (inference).
+  # This can be the same as the training file or a different, more recent file.
+  eval_file_path: 'Prime 1.csv'
+
+  # The name of the column that contains the timestamp/date information.
+  time_column: 'Datum'
+
+  # The name of the column used to identify individual time series (e.g., customer name).
+  series_column: 'Naam'
+
+  # List of all target variables the model should predict.
+  target_columns:
+    - "OrderDag"
+    - "OrderUur_0"
+    - "OrderUur_1"
+    - "OrderUur_2"
+    - "OrderUur_3"
+    - "OrderUur_4"
+    - "OrderUur_5"
+    - "OrderUur_6"
+    - "OrderUur_7"
+    - "OrderUur_8"
+    - "OrderUur_9"
+    - "OrderUur_10"
+    - "OrderUur_11"
+    - "OrderUur_12"
+    - "OrderUur_13"
+    - "OrderUur_14"
+    - "OrderUur_15"
+    - "OrderUur_16"
+    - "OrderUur_17"
+    - "OrderUur_18"
+    - "OrderUur_19"
+    - "OrderUur_20"
+    - "OrderUur_21"
+    - "OrderUur_22"
+    - "OrderUur_23"
+    - "Picktime_0"
+    - "Picktime_1"
+    - "Picktime_2"
+    - "Picktime_3"
+    - "Picktime_4"
+    - "Picktime_5"
+    - "Picktime_6"
+    - "Picktime_7"
+    - "Picktime_8"
+    - "Picktime_9"
+    - "Picktime_10"
+    - "Picktime_11"
+    - "Picktime_12"
+    - "Picktime_13"
+    - "Picktime_14"
+    - "Picktime_15"
+    - "Picktime_16"
+    - "Picktime_17"
+    - "Picktime_18"
+    - "Picktime_19"
+    - "Picktime_20"
+    - "Picktime_21"
+    - "Picktime_22"
+    - "Picktime_23"
+
+# ======================================================================================
+# --- Model Architecture & Forecasting Parameters ---
+# ======================================================================================
+model:
+  # Directory where model checkpoints will be saved and loaded from.
+  checkpoint_dir: "model_checkpoints"
+
+  # How many timesteps into the future the model should predict.
+  prediction_horizon: 7
+
+  # How many past timesteps the model sees to make a prediction.
+  # VRAM: HIGH impact. VRAM usage scales directly with this value.
+  # Time: HIGH impact. More data to process per sample means slower training steps.
+  # Note: This is a key part of the VRAM/time trade-off. A longer window can improve
+  # accuracy but requires more resources, potentially forcing a smaller batch_size.
+  lookback_window: 400
+  lookback_window_debug: 10
+
+  # Model hyperparameters for the Temporal Fusion Transformer.
+  hyperparameters:
+    # Size of the hidden state in the LSTM and attention layers.
+    # VRAM: VERY HIGH impact. This is a primary driver of the model's size and memory footprint.
+    # Time: VERY HIGH impact. Larger models are slower to train but can capture more complex patterns.
+    # Common values are powers of 2 (e.g., 64, 128, 256, 512).
+    hidden_size: 128
+    
+    # Number of attention heads. 'hidden_size' must be perfectly divisible by this value.
+    # VRAM: Moderate impact.
+    # Time: Moderate impact.
+    # Common values (e.g., 2, 4, 8).
+    attention_head_size: 4
+    
+    # Dropout rate for regularization. Higher values can prevent overfitting but may slow convergence.
+    # VRAM/Time: Negligible impact.
+    dropout: 0.1
+    
+    # Size of the hidden layer for processing continuous variables.
+    # VRAM: Moderate impact.
+    # Time: Moderate impact.
+    # Common values are powers of 2 (e.g., 16, 32, 64).
+    hidden_continuous_size: 32
+
+  # Hyperparameters used only when DEBUG_MODE is true.
+  hyperparameters_debug:
+    hidden_size: 16
+    attention_head_size: 1
+    dropout: 0.1
+    hidden_continuous_size: 8
+
+# ======================================================================================
+# --- Training Process ---
+# ======================================================================================
+# --- VRAM vs. Time Tuning Strategy ---
+# The main goal is to maximize GPU utilization without running out of memory.
+# It's a three-way balancing act between batch_size, lookback_window, and hidden_size.
+# 1. Start with your desired model complexity (hidden_size) and context (lookback_window).
+# 2. Find the largest `batch_size` that fits in your VRAM. Start high and decrease until it runs.
+# 3. If training is too slow, you might need to reduce `lookback_window` or `hidden_size`, which
+#    will then allow you to increase `batch_size` again.
+# 4. Using 'medium' precision is the easiest way to get a significant boost in speed and VRAM savings.
+training:
+  # Number of samples processed in one forward/backward pass.
+  # VRAM: VERY HIGH impact. This is the first knob to turn when you face "Out of Memory" errors.
+  # Time: Indirect impact. Larger batches can lead to faster total training time if the GPU is powerful enough.
+  # Common values are powers of 2 (e.g., 16, 32, 64, 128), which can be more efficient on GPU hardware.
+  batch_size: 64
+  batch_size_debug: 4
+
+  # Batch size for the validation loop. Can often be larger than training batch size as no gradients are stored.
+  val_batch_size: 128
+  val_batch_size_debug: 4
+
+  # Number of parallel CPU workers for data loading.
+  # VRAM: No direct impact.
+  # Time: Can significantly reduce training time by preparing data batches on the CPU while the GPU is busy.
+  # Rule of thumb: Start with half the number of your CPU cores. Set to 0 for Windows/debugging.
+  num_workers: 0
+
+  # Learning rate for the optimizer.
+  # VRAM/Time: No direct impact on resource usage, but critical for model performance and convergence speed.
+  learning_rate: 0.001
+
+  # Optimizer algorithm to use. "AdamW" is a robust default.
+  # VRAM/Time: Minor impact. Some optimizers might use slightly more memory to store momentum states.
+  optimizer: "AdamW"
+  
+  # Precision for matrix multiplication on GPU.
+  # VRAM: HIGH impact. 'medium' ('16-mixed') can cut VRAM usage by ~40-50%.
+  # Time: HIGH impact. Can speed up training significantly on modern GPUs (with Tensor Cores).
+  torch_precision: 'medium'
+
+  # Early stopping settings to prevent overfitting by stopping when validation loss plateaus.
+  early_stopping:
+    monitor: "val_loss"
+    patience: 10
+    patience_debug: 1
+    mode: "min"
+    verbose: True
+
+  # Hardware settings for Pytorch Lightning. 'auto' is usually the best choice.
+  accelerator: "auto"
+  devices: "auto"
+
+  # Settings for a quick debug training run to verify the entire pipeline works.
+  debug_run_params:
+    max_epochs: 1
+    limit_train_batches: 1
+    limit_val_batches: 1
+
+# ======================================================================================
+# --- Evaluation Process ---
+# ======================================================================================
+evaluation:
+  # Name of the Excel file to save the forecast report.
+  output_report_name: "latest_forecast_by_customer.xlsx"
+  # Accelerator for inference. 'cpu' is fine and frees up GPU memory, but 'cuda' will be much faster.
+  accelerator: "cpu"
