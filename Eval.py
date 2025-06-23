@@ -105,12 +105,20 @@ def evaluate_model():
         eval_df = new_df.copy()
         if is_debug:
             print("   Debug Mode: Subsetting data to match training conditions...")
-            # This logic must be identical to the trainer's debug mode logic
-            max_time_idx = eval_df['time_idx'].max()
-            df_for_series_selection = eval_df[eval_df['time_idx'] >= max_time_idx - 50]
-            unique_series = df_for_series_selection[cfg_data['series_column']].unique()[:2]
-            eval_df = eval_df[eval_df[cfg_data['series_column']].isin(unique_series)]
-            print(f"   Evaluating on debug series: {unique_series.tolist()}")
+            # --- ROBUST DEBUG LOGIC ---
+            # 1. Find which series are long enough to create a valid sample.
+            min_length = cfg_model['lookback_window'] + cfg_model['prediction_horizon']
+            series_lengths = eval_df.groupby(cfg_data['series_column']).size()
+            valid_series_for_debug = series_lengths[series_lengths >= min_length].index
+            
+            if len(valid_series_for_debug) < 2:
+                raise ValueError(f"Not enough long series for debug mode. Found {len(valid_series_for_debug)}, need at least 2.")
+
+            # 2. Select the first two of these valid series.
+            debug_series = valid_series_for_debug[:2]
+            eval_df = eval_df[eval_df[cfg_data['series_column']].isin(debug_series)]
+            print(f"   Evaluating on debug series: {debug_series.tolist()}")
+
 
         print("3a. Reconstructing dataset from model parameters...")
         # Use the (potentially filtered) eval_df
