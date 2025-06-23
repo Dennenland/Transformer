@@ -1,10 +1,5 @@
 # Core ML & Forecasting Libraries
-# IMPORTANT: The torch command below is a general placeholder.
-# For GPU support, first install PyTorch separately based on your specific CUDA version.
-# Visit https://pytorch.org/get-started/locally/ for the correct command.
-torch
-torchvision
-torchaudio
+# NOTE: PyTorch is now installed separately in the setup script.
 lightning
 pytorch-forecasting
 
