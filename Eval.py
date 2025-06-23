@@ -101,43 +101,23 @@ def evaluate_model():
             new_df[col] = pd.to_numeric(new_df[col], errors='coerce').astype("float32")
         new_df[cfg_data['target_columns']] = new_df[cfg_data['target_columns']].fillna(0.0)
 
-        # --- FIX: Apply debug filtering here, before reconstructing the dataset ---
-        eval_df = new_df.copy()
+        # --- REMOVED MANUAL DEBUG SLICING ---
+        # The debug model was trained on the full dataset (with limit_batches=1),
+        # so for evaluation we also use the full dataset to find data for prediction.
         if is_debug:
-            print("   Debug Mode: Subsetting data to match training conditions...")
-            # --- ROBUST DEBUG LOGIC ---
-            # 1. Find which series are long enough to create a valid sample.
-            min_length = cfg_model['lookback_window'] + cfg_model['prediction_horizon']
-            series_lengths = eval_df.groupby(cfg_data['series_column']).size()
-            valid_series_for_debug = series_lengths[series_lengths >= min_length].index
-            
-            if len(valid_series_for_debug) < 2:
-                raise ValueError(f"Not enough long series for debug mode. Found {len(valid_series_for_debug)}, need at least 2.")
-
-            # 2. Select the first two of these valid series.
-            debug_series = valid_series_for_debug[:2]
-            eval_df = eval_df[eval_df[cfg_data['series_column']].isin(debug_series)]
-            print(f"   Evaluating on debug series: {debug_series.tolist()}")
+            print("   Debug Mode: Evaluating model trained on a limited number of batches.")
 
 
         print("3a. Reconstructing dataset from model parameters...")
-        # Use the (potentially filtered) eval_df
+        # Use the full dataframe for reconstruction
         reference_dataset = TimeSeriesDataSet.from_parameters(
-            best_tft_model.dataset_parameters, eval_df
+            best_tft_model.dataset_parameters, new_df
         )
         print("   Reference dataset created.")
 
-        print("3b. Identifying valid series for prediction...")
-        series_encoder = reference_dataset.categorical_encoders[cfg_data['series_column']]
-        valid_series = series_encoder.classes_
-        print(f"   Model was trained on {len(valid_series)} unique series. Generating forecasts for these only.")
-
-        prediction_input_df = eval_df[eval_df[cfg_data['series_column']].isin(valid_series)]
-        prediction_input_df = prediction_input_df.groupby(cfg_data['series_column']).tail(cfg_model['lookback_window'])
-
-        print(f"3c. Generating forecast for the next {cfg_model['prediction_horizon']}-day period...")
+        print(f"3b. Generating forecast for the next {cfg_model['prediction_horizon']}-day period...")
         predictions = best_tft_model.predict(
-            prediction_input_df,
+            reference_dataset,
             trainer_kwargs=dict(accelerator=cfg_eval['accelerator']),
             mode="raw",
             return_x=True
