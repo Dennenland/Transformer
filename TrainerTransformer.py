@@ -57,22 +57,9 @@ def train_forecasting_model():
         df[col] = pd.to_numeric(df[col], errors='coerce').astype("float32")
     df[cfg_data['target_columns']] = df[cfg_data['target_columns']].fillna(0.0)
 
-    # --- UPDATED DEBUG LOGIC TO MATCH EVALUATOR ---
-    if is_debug:
-        print("   Debug: Subsetting data for faster processing...")
-        # 1. Find which series are long enough to create a valid sample.
-        min_length = cfg_model['lookback_window'] + cfg_model['prediction_horizon']
-        series_lengths = df.groupby(cfg_data['series_column']).size()
-        valid_series_for_debug = series_lengths[series_lengths >= min_length].index
-        
-        if len(valid_series_for_debug) < 2:
-            raise ValueError(f"Not enough long series for debug mode. Found {len(valid_series_for_debug)}, need at least 2.")
-
-        # 2. Select the first two of these valid series.
-        debug_series = valid_series_for_debug[:2]
-        df = df[df[cfg_data['series_column']].isin(debug_series)]
-        print(f"   Training on debug series: {debug_series.tolist()}")
-
+    # --- REMOVED MANUAL DEBUG SLICING ---
+    # The debug mode is now controlled by the trainer parameters (limit_train_batches)
+    # which is a more robust approach.
 
     print(f"   Data loaded. Shape: {df.shape}")
     print("2. Defining the TimeSeriesDataSet...")
