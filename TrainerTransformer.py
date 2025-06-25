@@ -9,10 +9,9 @@ import warnings
 import time
 import psutil
 
-# --- Import the centralized configuration ---
+# --- Import the centralized configuration and your new feature enhancer ---
 from config_loader import config
 from date_deriv_feat_enhancer import add_cyclical_datetime_features
-
 
 # --- Suppress pandas PerformanceWarning ---
 warnings.filterwarnings(
@@ -34,36 +33,35 @@ def train_forecasting_model():
     Main function to orchestrate the model training process using settings
     from the centralized config file.
     """
-    # (Unpacking config and initial setup remains the same)
-    # ...
+    # Unpack config and set up seeds and timers
     cfg_data = config['data']
     cfg_model = config['model']
     cfg_train = config['training']
     is_debug = config['DEBUG_MODE']
 
-    # (Seed and time setup remains the same)
-    # ...
+    # --- FIX: Re-added missing initialization ---
+    pl.seed_everything(42, workers=True)
+    start_time = time.time()
+    timestamp = time.strftime("%Y%m%d-%H%M%S")
+    # --- END OF FIX ---
 
     print(f"1. Loading and preparing training data from '{cfg_data['train_file_path']}'...")
     df = pd.read_csv(cfg_data['train_file_path'], sep=';', decimal=',')
     df[cfg_data['time_column']] = pd.to_datetime(df[cfg_data['time_column']])
     
-    # --- NEW: Apply the feature enhancer ---
     print("1a. Enhancing data with cyclical datetime features...")
     df = add_cyclical_datetime_features(df, datetime_col=cfg_data['time_column'])
     
-    # --- NEW: Dynamically add the new feature names to the config ---
     new_cyclical_features = [
         'day_of_week_sin', 'day_of_week_cos',
         'day_of_month_sin', 'day_of_month_cos',
         'day_of_year_sin', 'day_of_year_cos'
     ]
-    # Add only if they don't already exist to prevent duplication
+    # Add new features to the config list if they are not already present
     for feature in new_cyclical_features:
         if feature not in cfg_data['time_varying_known_reals']:
             cfg_data['time_varying_known_reals'].append(feature)
 
-    # (The rest of the data preparation continues as before)
     df[cfg_data['series_column']] = df[cfg_data['series_column']].astype(str).astype("category")
     df['time_idx'] = (df[cfg_data['time_column']] - df[cfg_data['time_column']].min()).dt.days
     
@@ -71,12 +69,15 @@ def train_forecasting_model():
         df[col] = pd.to_numeric(df[col], errors='coerce').astype("float32")
     df[cfg_data['target_columns']] = df[cfg_data['target_columns']].fillna(0.0)
 
-    # (Debug logic remains the same)
-    # ...
-    
+    # In debug mode, we still load all data to let the TimeSeriesDataSet see all categories,
+    # but the trainer will only use a limited number of batches.
+    if is_debug:
+        print("   Debug mode is on. Trainer will use limited batches.")
+
     print(f"   Data loaded. Shape: {df.shape}")
     print("2. Defining the TimeSeriesDataSet...")
 
+    # Create the dataset for training, covering all data except the last part for validation
     training_data = TimeSeriesDataSet(
         df[lambda x: x.time_idx <= x.time_idx.max() - cfg_model['prediction_horizon']],
         time_idx="time_idx",
@@ -86,7 +87,6 @@ def train_forecasting_model():
         min_encoder_length=cfg_model['min_encoder_length'],
         max_prediction_length=cfg_model['prediction_horizon'],
         static_categoricals=[cfg_data['series_column']],
-        # --- UPDATED: Use the enhanced list of known features from config ---
         time_varying_known_reals=cfg_data['time_varying_known_reals'],
         time_varying_unknown_reals=cfg_data['target_columns'],
         target_normalizer=MultiNormalizer(
@@ -98,16 +98,19 @@ def train_forecasting_model():
         allow_missing_timesteps=True
     )
 
-    train_dataloader = training_data.to_dataloader(
-        train=True,
-        batch_size=cfg_train['batch_size'],
-        num_workers=cfg_train['num_workers']
-    )
+    # Create validation set from the full dataset, using the parameters from the training set
     val_dataloader = TimeSeriesDataSet.from_dataset(
         training_data, df, predict=False, stop_randomization=True
     ).to_dataloader(
         train=False,
         batch_size=cfg_train['val_batch_size'],
+        num_workers=cfg_train['num_workers']
+    )
+
+    # Create training dataloader
+    train_dataloader = training_data.to_dataloader(
+        train=True,
+        batch_size=cfg_train['batch_size'],
         num_workers=cfg_train['num_workers']
     )
 
@@ -130,7 +133,7 @@ def train_forecasting_model():
     if is_debug:
         trainer_params.update(cfg_train['debug_run_params'])
     else:
-        # For full runs, max_epochs can be set to -1 for unlimited epochs (relying on early stopping)
+        # For full runs, max_epochs can be set to -1 to rely on early stopping
         trainer_params["max_epochs"] = -1
 
     trainer = pl.Trainer(**trainer_params)
