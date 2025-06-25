@@ -93,13 +93,13 @@ model:
     # VRAM: VERY HIGH impact. This is a primary driver of the model's size and memory footprint.
     # Time: VERY HIGH impact. Larger models are slower to train but can capture more complex patterns.
     # Common values are powers of 2 (e.g., 64, 128, 256, 512).
-    hidden_size: 128
+    hidden_size: 256
     
     # Number of attention heads. 'hidden_size' must be perfectly divisible by this value.
     # VRAM: Moderate impact.
     # Time: Moderate impact.
     # Common values (e.g., 2, 4, 8).
-    attention_head_size: 4
+    attention_head_size: 8
     
     # Dropout rate for regularization. Higher values can prevent overfitting but may slow convergence.
     # VRAM/Time: Negligible impact.
@@ -109,7 +109,7 @@ model:
     # VRAM: Moderate impact.
     # Time: Moderate impact.
     # Common values are powers of 2 (e.g., 16, 32, 64).
-    hidden_continuous_size: 32
+    hidden_continuous_size: 64
 
   # Hyperparameters used only when DEBUG_MODE is true.
   hyperparameters_debug:
@@ -185,4 +185,5 @@ evaluation:
   # Name of the Excel file to save the forecast report.
   output_report_name: "latest_forecast_by_customer.xlsx"
   # Accelerator for inference. 'cpu' is fine and frees up GPU memory, but 'cuda' will be much faster.
-  accelerator: "cpu"
+  accelerator: "cuda"
+
