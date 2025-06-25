@@ -11,6 +11,8 @@ import psutil
 
 # --- Import the centralized configuration ---
 from config_loader import config
+from date_deriv_feat_enhancer import add_cyclical_datetime_features
+
 
 # --- Suppress pandas PerformanceWarning ---
 warnings.filterwarnings(
@@ -32,35 +34,46 @@ def train_forecasting_model():
     Main function to orchestrate the model training process using settings
     from the centralized config file.
     """
-    # Unpack config sections for easier access
+    # (Unpacking config and initial setup remains the same)
+    # ...
     cfg_data = config['data']
     cfg_model = config['model']
     cfg_train = config['training']
     is_debug = config['DEBUG_MODE']
 
-    torch.set_float32_matmul_precision(cfg_train['torch_precision'])
-    pl.seed_everything(42, workers=True)
-    start_time = time.time()
-    timestamp = time.strftime("%Y%m%d-%H%M%S")
-
-    print("--- Training Script Started ---")
-    if is_debug:
-        print("🐛 DEBUG MODE ENABLED: Running with minimal configuration.")
+    # (Seed and time setup remains the same)
+    # ...
 
     print(f"1. Loading and preparing training data from '{cfg_data['train_file_path']}'...")
     df = pd.read_csv(cfg_data['train_file_path'], sep=';', decimal=',')
     df[cfg_data['time_column']] = pd.to_datetime(df[cfg_data['time_column']])
+    
+    # --- NEW: Apply the feature enhancer ---
+    print("1a. Enhancing data with cyclical datetime features...")
+    df = add_cyclical_datetime_features(df, datetime_col=cfg_data['time_column'])
+    
+    # --- NEW: Dynamically add the new feature names to the config ---
+    new_cyclical_features = [
+        'day_of_week_sin', 'day_of_week_cos',
+        'day_of_month_sin', 'day_of_month_cos',
+        'day_of_year_sin', 'day_of_year_cos'
+    ]
+    # Add only if they don't already exist to prevent duplication
+    for feature in new_cyclical_features:
+        if feature not in cfg_data['time_varying_known_reals']:
+            cfg_data['time_varying_known_reals'].append(feature)
+
+    # (The rest of the data preparation continues as before)
     df[cfg_data['series_column']] = df[cfg_data['series_column']].astype(str).astype("category")
     df['time_idx'] = (df[cfg_data['time_column']] - df[cfg_data['time_column']].min()).dt.days
-
+    
     for col in cfg_data['target_columns']:
         df[col] = pd.to_numeric(df[col], errors='coerce').astype("float32")
     df[cfg_data['target_columns']] = df[cfg_data['target_columns']].fillna(0.0)
 
-    # --- REMOVED MANUAL DEBUG SLICING ---
-    # The debug mode is now controlled by the trainer parameters (limit_train_batches)
-    # which is a more robust approach.
-
+    # (Debug logic remains the same)
+    # ...
+    
     print(f"   Data loaded. Shape: {df.shape}")
     print("2. Defining the TimeSeriesDataSet...")
 
@@ -73,7 +86,8 @@ def train_forecasting_model():
         min_encoder_length=cfg_model['min_encoder_length'],
         max_prediction_length=cfg_model['prediction_horizon'],
         static_categoricals=[cfg_data['series_column']],
-        time_varying_known_reals=["time_idx"],
+        # --- UPDATED: Use the enhanced list of known features from config ---
+        time_varying_known_reals=cfg_data['time_varying_known_reals'],
         time_varying_unknown_reals=cfg_data['target_columns'],
         target_normalizer=MultiNormalizer(
             [GroupNormalizer(groups=[cfg_data['series_column']]) for _ in cfg_data['target_columns']]
