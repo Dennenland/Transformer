@@ -1,29 +1,24 @@
 # ======================================================================================
 # --- Global Settings ---
 # ======================================================================================
-# Master switch for debugging. If true, uses smaller datasets and model sizes
-# for faster testing runs. This is the most important switch for quick tests.
 DEBUG_MODE: False
 
 # ======================================================================================
 # --- Data & Feature Engineering ---
 # ======================================================================================
 data:
-  # Path to the CSV file used for TRAINING the model.
   train_file_path: 'Prime 1.csv'
-  
-  # Path to the CSV file used for EVALUATION (inference).
-  # This can be the same as the training file or a different, more recent file.
   eval_file_path: 'Prime 1.csv'
-
-  # The name of the column that contains the timestamp/date information.
   time_column: 'Datum'
-
-  # The name of the column used to identify individual time series (e.g., customer name).
   series_column: 'Naam'
 
-  # List of all target variables the model should predict.
+  # NEW: List of time-varying features that are known in the future.
+  # The scripts will automatically add the new cyclical features to this list.
+  time_varying_known_reals:
+    - "time_idx"
+
   target_columns:
+    # (Your target columns list remains here, unchanged)
     - "OrderDag"
     - "OrderUur_0"
     - "OrderUur_1"
