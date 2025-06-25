@@ -7,6 +7,7 @@ import os
 import sys
 import glob
 import numpy as np
+from tqdm import tqdm  # NEW: Import tqdm for progress bars
 
 # --- Import the centralized configuration ---
 from config_loader import config
@@ -79,7 +80,7 @@ def evaluate_model():
     cfg_data = config['data']
     cfg_model = config['model']
     cfg_eval = config['evaluation']
-    cfg_train = config['training'] # Needed for batch_size
+    cfg_train = config['training']  # Needed for batch_size
     is_debug = config['DEBUG_MODE']
 
     latest_checkpoint_path = find_latest_checkpoint(cfg_model['checkpoint_dir'], debug=is_debug)
@@ -102,27 +103,44 @@ def evaluate_model():
             new_df[col] = pd.to_numeric(new_df[col], errors='coerce').astype("float32")
         new_df[cfg_data['target_columns']] = new_df[cfg_data['target_columns']].fillna(0.0)
 
+        # =================================================================================
+        # --- Filter data to keep only recent history needed for prediction ---
+        # =================================================================================
+        print("3. Filtering data to reduce memory and processing time...")
+        encoder_length = best_tft_model.dataset_parameters['max_encoder_length']
+        required_history_length = encoder_length + cfg_model['prediction_horizon']
+
+        last_time_idx_df = new_df.groupby(cfg_data['series_column'])['time_idx'].max().to_frame(
+            'max_time_idx').reset_index()
+        new_df = new_df.merge(last_time_idx_df, on=cfg_data['series_column'])
+
+        cutoff = new_df['max_time_idx'] - required_history_length
+        filtered_df = new_df[new_df['time_idx'] >= cutoff].copy()
+
+        filtered_df.drop(columns=['max_time_idx'], inplace=True)
+
+        print(f"   Original data size: {len(new_df)} rows.")
+        print(f"   Filtered data size: {len(filtered_df)} rows.")
+        # =================================================================================
+
         if is_debug:
             print("   Debug Mode: Evaluating model trained on a limited number of batches.")
 
-        print("3a. Reconstructing dataset from model parameters...")
-        # Use the full dataframe for reconstruction. The dataloader will handle filtering.
+        print("4a. Reconstructing dataset from model parameters...")
         reference_dataset = TimeSeriesDataSet.from_parameters(
-            best_tft_model.dataset_parameters, new_df
+            best_tft_model.dataset_parameters, filtered_df
         )
         print("   Reference dataset created.")
 
-        # --- ROBUST PREDICTION LOGIC ---
-        # Create a dataloader for prediction. This is more efficient and robust
-        # as it automatically handles filtering out series that are too short.
         prediction_dataloader = reference_dataset.to_dataloader(
             train=False,
-            batch_size=cfg_train['val_batch_size'] * 2 # Use a larger batch size for inference
+            batch_size=cfg_train['val_batch_size'] * 2,
+            num_workers=os.cpu_count()
         )
 
-        print(f"3b. Generating forecast for the next {cfg_model['prediction_horizon']}-day period...")
+        print(f"4b. Generating forecast for the next {cfg_model['prediction_horizon']}-day period...")
         predictions = best_tft_model.predict(
-            prediction_dataloader, # <-- Pass the dataloader
+            prediction_dataloader,
             trainer_kwargs=dict(accelerator=cfg_eval['accelerator']),
             mode="raw",
             return_x=True
@@ -133,19 +151,18 @@ def evaluate_model():
             print("\n--- WARNING: No predictions were generated. ---")
             sys.exit(0)
 
-        print("\n4. Reshaping data and calculating metrics...")
+        print("\n5. Reshaping data and calculating metrics...")
         median_prediction_idx = 3
-        predicted_values = prediction_list
-        actuals_lookup_df = new_df.set_index([cfg_data['series_column'], 'time_idx'])
+        actuals_lookup_df = filtered_df.set_index([cfg_data['series_column'], 'time_idx'])
         results_list = []
 
-        # The x_to_index needs the dataloader, not the dataset, when using a dataloader for prediction
         index_df = prediction_dataloader.dataset.x_to_index(predictions.x)
         names = index_df[cfg_data['series_column']]
         last_encoder_time_idx = index_df['time_idx']
 
-        for i, target_name in enumerate(cfg_data['target_columns']):
-            median_preds_for_target = predicted_values[i][:, :, median_prediction_idx].cpu().numpy()
+        # NEW: Added tqdm for a progress bar while processing predictions
+        for i, target_name in enumerate(tqdm(cfg_data['target_columns'], desc="Processing Predictions")):
+            median_preds_for_target = prediction_list[i][:, :, median_prediction_idx].cpu().numpy()
             for sample_idx in range(len(names)):
                 current_name = names.iloc[sample_idx]
                 current_time_idx = last_encoder_time_idx.iloc[sample_idx]
@@ -186,7 +203,7 @@ def evaluate_model():
         print("\n--- OVERALL METRICS ---\n", overall_metrics.to_string())
 
         output_excel_path = cfg_eval['output_report_name']
-        print(f"\n5. Saving detailed forecast report to '{output_excel_path}'...")
+        print(f"\n6. Saving detailed forecast report to '{output_excel_path}'...")
         with pd.ExcelWriter(output_excel_path, engine='openpyxl') as writer:
             overall_metrics.to_excel(writer, sheet_name="Overall_Metrics")
             metrics_per_customer.to_excel(writer, sheet_name="Metrics_Per_Customer")
@@ -195,7 +212,9 @@ def evaluate_model():
             target_col_categorical = pd.CategoricalDtype(cfg_data['target_columns'], ordered=True)
             results_df['target_variable'] = results_df['target_variable'].astype(target_col_categorical)
 
-            for customer_name, customer_df in results_df.groupby(cfg_data['series_column']):
+            # NEW: Added tqdm for a progress bar while writing to Excel
+            grouped_customers = results_df.groupby(cfg_data['series_column'])
+            for customer_name, customer_df in tqdm(grouped_customers, desc="Writing Customer Sheets"):
                 pivot_df = customer_df.pivot_table(
                     index='forecast_date', columns='target_variable', values=['actual', 'predicted']
                 )
