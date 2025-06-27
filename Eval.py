@@ -7,10 +7,13 @@ import os
 import sys
 import glob
 import numpy as np
-from tqdm import tqdm  # NEW: Import tqdm for progress bars
+from tqdm import tqdm
 
 # --- Import the centralized configuration ---
 from config_loader import config
+# --- ADDED: Import the feature enhancer ---
+from date_deriv_feat_enhancer import add_cyclical_datetime_features
+
 
 # --- Suppress pandas PerformanceWarning ---
 warnings.filterwarnings(
@@ -37,7 +40,6 @@ def find_latest_checkpoint(checkpoint_dir, debug=False):
 
 def calculate_metrics(df, group_by_col=None):
     """Calculates MAE, MAPE, and R2 score, with optional grouping."""
-    # This function is unchanged
     metrics_list = []
     df['actual'] = pd.to_numeric(df['actual'], errors='coerce')
     df['predicted'] = pd.to_numeric(df['predicted'], errors='coerce')
@@ -96,6 +98,13 @@ def evaluate_model():
         print(f"2. Loading and preparing evaluation data from '{cfg_data['eval_file_path']}'...")
         new_df = pd.read_csv(cfg_data['eval_file_path'], sep=';', decimal=',')
         new_df[cfg_data['time_column']] = pd.to_datetime(new_df[cfg_data['time_column']])
+
+        # --- FIX: Add cyclical features to the evaluation data ---
+        print("2a. Enhancing evaluation data with cyclical datetime features...")
+        new_df = add_cyclical_datetime_features(new_df, datetime_col=cfg_data['time_column'])
+        print("    Cyclical features added.")
+        # --- END OF FIX ---
+        
         new_df[cfg_data['series_column']] = new_df[cfg_data['series_column']].astype(str).astype("category")
         min_date = new_df[cfg_data['time_column']].min()
         new_df['time_idx'] = (new_df[cfg_data['time_column']] - min_date).dt.days
@@ -127,6 +136,7 @@ def evaluate_model():
             print("   Debug Mode: Evaluating model trained on a limited number of batches.")
 
         print("4a. Reconstructing dataset from model parameters...")
+        # This will now work because filtered_df contains the required cyclical features
         reference_dataset = TimeSeriesDataSet.from_parameters(
             best_tft_model.dataset_parameters, filtered_df
         )
@@ -160,7 +170,6 @@ def evaluate_model():
         names = index_df[cfg_data['series_column']]
         last_encoder_time_idx = index_df['time_idx']
 
-        # NEW: Added tqdm for a progress bar while processing predictions
         for i, target_name in enumerate(tqdm(cfg_data['target_columns'], desc="Processing Predictions")):
             median_preds_for_target = prediction_list[i][:, :, median_prediction_idx].cpu().numpy()
             for sample_idx in range(len(names)):
@@ -212,7 +221,6 @@ def evaluate_model():
             target_col_categorical = pd.CategoricalDtype(cfg_data['target_columns'], ordered=True)
             results_df['target_variable'] = results_df['target_variable'].astype(target_col_categorical)
 
-            # NEW: Added tqdm for a progress bar while writing to Excel
             grouped_customers = results_df.groupby(cfg_data['series_column'])
             for customer_name, customer_df in tqdm(grouped_customers, desc="Writing Customer Sheets"):
                 pivot_df = customer_df.pivot_table(
