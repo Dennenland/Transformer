@@ -110,45 +110,35 @@ def evaluate_model():
             new_df[col] = pd.to_numeric(new_df[col], errors='coerce').astype("float32")
         new_df[cfg_data['target_columns']] = new_df[cfg_data['target_columns']].fillna(0.0)
 
-        # --- FIX: Handle new groups by checking for sufficient history ---
-        print("2b. Handling new groups in evaluation data...")
-        encoder_length = best_tft_model.hparams.max_encoder_length
+        # --- FIX: Recreate dataset for evaluation to handle new groups ---
+        print("2b. Handling new groups and creating a compatible dataset...")
         
-        # --- FIX: Access encoders directly from the loaded model object itself ---
-        group_encoder = best_tft_model.encoders[cfg_data['series_column']]
-        known_groups = list(group_encoder.classes_)
-        
-        all_eval_groups = new_df[cfg_data['series_column']].unique()
-        new_groups = [group for group in all_eval_groups if group not in known_groups]
-        
-        valid_new_groups = []
-        ignored_new_groups = []
+        # Get parameters from the loaded model's hyperparameters
+        model_params = best_tft_model.hparams
+        encoder_length = model_params.max_encoder_length
+        prediction_length = model_params.max_prediction_length
 
-        if new_groups:
-            print(f"   Found new groups not in training data: {new_groups}. Checking for sufficient history...")
-            for group in new_groups:
-                group_history_length = len(new_df[new_df[cfg_data['series_column']] == group])
-                if group_history_length >= encoder_length:
-                    valid_new_groups.append(group)
-                else:
-                    ignored_new_groups.append(group)
-            
-            if valid_new_groups:
-                print(f"   OK to proceed with new groups: {valid_new_groups}")
-                # Add valid new groups to the model's encoder in-memory
-                group_encoder.classes_ = known_groups + valid_new_groups
-            
-            if ignored_new_groups:
-                print(f"   WARNING: Ignoring new groups with insufficient history (need >= {encoder_length} records): {ignored_new_groups}")
+        # Before creating the dataset, filter out any groups that don't have enough history
+        history_counts = new_df.groupby(cfg_data['series_column'])['time_idx'].count()
+        groups_with_sufficient_history = history_counts[history_counts >= encoder_length].index
+        original_rows = len(new_df)
+        evaluation_df = new_df[new_df[cfg_data['series_column']].isin(groups_with_sufficient_history)]
+        filtered_rows = len(evaluation_df)
+        ignored_groups = history_counts[history_counts < encoder_length].index
 
-        else:
-            print("   No new groups found. All groups in evaluation data are known to the model.")
+        if len(ignored_groups) > 0:
+            print(f"   WARNING: The following groups have insufficient history (need >= {encoder_length} records) and will be ignored: {list(ignored_groups)}")
+            print(f"   Filtered from {original_rows} to {filtered_rows} rows.")
 
-        # Filter the dataframe to only include known groups and valid new groups
-        groups_to_process = known_groups + valid_new_groups
-        evaluation_df = new_df[new_df[cfg_data['series_column']].isin(groups_to_process)].copy()
-        evaluation_df[cfg_data['series_column']] = evaluation_df[cfg_data['series_column']].astype("category")
-        
+        print("3. Creating a new TimeSeriesDataSet for evaluation...")
+        # Create a new dataset for prediction. This will learn the new categories.
+        # We reuse the normalizers from the original training dataset.
+        prediction_dataset = TimeSeriesDataSet.from_dataset(
+            best_tft_model.training_dataset,
+            evaluation_df,
+            predict=True,
+            stop_randomization=True,
+        )
         # --- END OF FIX ---
 
         if is_debug:
@@ -156,7 +146,7 @@ def evaluate_model():
 
         print(f"4. Generating forecast for the next {cfg_model['prediction_horizon']}-day period...")
         predictions_output, index_df = best_tft_model.predict(
-            evaluation_df,  # Use the filtered dataframe
+            prediction_dataset,  # Use the newly created dataset
             mode="raw",
             return_index=True,
             trainer_kwargs=dict(accelerator=cfg_eval['accelerator']),
@@ -171,6 +161,7 @@ def evaluate_model():
 
         print("\n5. Reshaping data and calculating metrics...")
         median_prediction_idx = 3
+        # Use the dataframe that was actually used for prediction for the lookup
         actuals_lookup_df = evaluation_df.set_index([cfg_data['series_column'], 'time_idx'])
         results_list = []
 
