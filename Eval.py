@@ -107,14 +107,16 @@ def evaluate_model():
         min_date = new_df[cfg_data['time_column']].min()
         new_df['time_idx'] = (new_df[cfg_data['time_column']] - min_date).dt.days
         for col in cfg_data['target_columns']:
-            new_df[col] = pd.to_numeric(new_df[col], errors='coerce').astype("float32")
+            new_df[col] = pd.to_numeric(df[col], errors='coerce').astype("float32")
         new_df[cfg_data['target_columns']] = new_df[cfg_data['target_columns']].fillna(0.0)
 
         # --- FIX: Handle new groups by checking for sufficient history ---
         print("2b. Handling new groups in evaluation data...")
         encoder_length = best_tft_model.dataset_parameters['max_encoder_length']
-        # --- FIX: Correctly access the encoders from the dataset parameters ---
-        known_groups = list(best_tft_model.dataset_parameters["encoders"][cfg_data['series_column']].classes_)
+        
+        # --- FIX: Access encoders from the model's reconstituted training object ---
+        group_encoder = best_tft_model.training.encoders[cfg_data['series_column']]
+        known_groups = list(group_encoder.classes_)
         
         all_eval_groups = new_df[cfg_data['series_column']].unique()
         new_groups = [group for group in all_eval_groups if group not in known_groups]
@@ -133,9 +135,8 @@ def evaluate_model():
             
             if valid_new_groups:
                 print(f"   OK to proceed with new groups: {valid_new_groups}")
-                # Add valid new groups to the model's known categories in-memory
-                updated_known_groups = known_groups + valid_new_groups
-                best_tft_model.dataset_parameters["encoders"][cfg_data['series_column']].classes_ = updated_known_groups
+                # Add valid new groups to the model's encoder in-memory
+                group_encoder.classes_ = known_groups + valid_new_groups
             
             if ignored_new_groups:
                 print(f"   WARNING: Ignoring new groups with insufficient history (need >= {encoder_length} records): {ignored_new_groups}")
