@@ -113,12 +113,11 @@ def evaluate_model():
         # --- FIX: Recreate dataset for evaluation to handle new groups ---
         print("2b. Handling new groups and creating a compatible dataset...")
         
-        # Get parameters from the loaded model's hyperparameters
-        model_params = best_tft_model.hparams
-        encoder_length = model_params.max_encoder_length
-        prediction_length = model_params.max_prediction_length
+        # Get parameters from the loaded model's saved dataset parameters
+        dataset_params = best_tft_model.dataset_parameters
 
         # Before creating the dataset, filter out any groups that don't have enough history
+        encoder_length = dataset_params['max_encoder_length']
         history_counts = new_df.groupby(cfg_data['series_column'])['time_idx'].count()
         groups_with_sufficient_history = history_counts[history_counts >= encoder_length].index
         original_rows = len(new_df)
@@ -131,13 +130,11 @@ def evaluate_model():
             print(f"   Filtered from {original_rows} to {filtered_rows} rows.")
 
         print("3. Creating a new TimeSeriesDataSet for evaluation...")
-        # Create a new dataset for prediction. This will learn the new categories.
-        # We reuse the normalizers from the original training dataset.
-        prediction_dataset = TimeSeriesDataSet.from_dataset(
-            best_tft_model.training_dataset,
+        # Create a new dataset using the original parameters.
+        # This allows handling new groups while reusing the fitted normalizers from training.
+        prediction_dataset = TimeSeriesDataSet(
             evaluation_df,
-            predict=True,
-            stop_randomization=True,
+            **dataset_params,
         )
         # --- END OF FIX ---
 
