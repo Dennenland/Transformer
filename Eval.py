@@ -110,14 +110,11 @@ def evaluate_model():
             new_df[col] = pd.to_numeric(new_df[col], errors='coerce').astype("float32")
         new_df[cfg_data['target_columns']] = new_df[cfg_data['target_columns']].fillna(0.0)
 
-        # --- FIX: Recreate dataset for evaluation to handle new groups robustly ---
         print("2b. Handling new groups and creating a compatible dataset...")
         
-        # Get parameters from the loaded model's saved dataset parameters
         dataset_params = best_tft_model.dataset_parameters
         encoder_length = dataset_params['max_encoder_length']
 
-        # Filter evaluation data to include only groups with enough history for prediction
         history_counts = new_df.groupby(cfg_data['series_column'])['time_idx'].count()
         groups_with_sufficient_history = history_counts[history_counts >= encoder_length].index
         
@@ -127,27 +124,33 @@ def evaluate_model():
         
         evaluation_df = new_df[new_df[cfg_data['series_column']].isin(groups_with_sufficient_history)]
         
-        print("3. Creating a new TimeSeriesDataSet for evaluation...")
-        # Create a new dataset from the evaluation data using the original parameters.
-        # This correctly handles any new groups while reusing the fitted normalizers from training.
+        print("3. Preparing memory-efficient input for prediction...")
+        prediction_input_df = evaluation_df.groupby(cfg_data['series_column']).tail(encoder_length)
+
         prediction_dataset = TimeSeriesDataSet(
-            evaluation_df,
+            prediction_input_df,
             **dataset_params,
         )
         print(f"   Predicting on {len(evaluation_df[cfg_data['series_column']].unique())} groups...")
-        # --- END OF FIX ---
 
         if is_debug:
             print("   Debug Mode: Evaluating model trained on a limited number of batches.")
 
         print(f"4. Generating forecast for the next {cfg_model['prediction_horizon']}-day period...")
-        predictions_output, index_df = best_tft_model.predict(
-            prediction_dataset,  # Pass the newly created dataset object
+        
+        # --- FIX: Use the stable `return_x=True` pattern to avoid unpacking errors ---
+        raw_predictions = best_tft_model.predict(
+            prediction_dataset,
             mode="raw",
-            return_index=True,
+            return_x=True,  # Return a single object instead of a tuple
             trainer_kwargs=dict(accelerator=cfg_eval['accelerator']),
             batch_size=cfg_train['val_batch_size'] * 2
         )
+        
+        predictions_output = raw_predictions.output
+        index_df = prediction_dataset.x_to_index(raw_predictions.x)
+        # --- END OF FIX ---
+
         print("   Forecasts generated.")
 
         prediction_list = predictions_output['prediction']
