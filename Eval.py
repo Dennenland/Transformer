@@ -91,6 +91,8 @@ def evaluate_model():
 
     try:
         print(f"1. Loading model from '{latest_checkpoint_path}'...")
+        # The from_dataset method will create a model and load weights
+        # It also reconstitutes the training dataset object
         best_tft_model = TemporalFusionTransformer.load_from_checkpoint(latest_checkpoint_path)
         best_tft_model.eval()
         print("   Model loaded successfully.")
@@ -110,18 +112,16 @@ def evaluate_model():
             new_df[col] = pd.to_numeric(new_df[col], errors='coerce').astype("float32")
         new_df[cfg_data['target_columns']] = new_df[cfg_data['target_columns']].fillna(0.0)
 
-        # --- FIX: Handle new groups and prepare for memory-efficient prediction ---
+        # --- FIX: Handle new groups using the loaded model's training_dataset ---
         print("2b. Handling new groups and preparing data for prediction...")
         
-        # Get parameters from the loaded model's saved dataset parameters
-        dataset_params = best_tft_model.dataset_parameters
-        encoder_length = dataset_params['max_encoder_length']
+        # Access the reconstituted training dataset from the loaded model
+        training_dataset = best_tft_model.training_dataset
         
-        # Get the encoder from the loaded model
-        group_encoder = dataset_params['encoders'][cfg_data['series_column']]
+        encoder_length = training_dataset.max_encoder_length
+        group_encoder = training_dataset.encoders[cfg_data['series_column']]
         known_groups = list(group_encoder.classes_)
         
-        # Identify new groups and check if they have enough history
         all_eval_groups = new_df[cfg_data['series_column']].unique()
         new_groups = [group for group in all_eval_groups if group not in known_groups]
         
@@ -131,16 +131,17 @@ def evaluate_model():
             history_counts = new_df.groupby(cfg_data['series_column'])['time_idx'].count()
             valid_new_groups = list(history_counts[history_counts >= encoder_length].index.intersection(new_groups))
             ignored_groups = list(set(new_groups) - set(valid_new_groups))
+
             if valid_new_groups:
                 print(f"   OK to proceed with new groups: {valid_new_groups}")
-                # Temporarily update the model's encoder to accept the new groups
+                # Temporarily update the encoder on the live object
                 group_encoder.classes_ = known_groups + valid_new_groups
             if ignored_groups:
                  print(f"   WARNING: Ignoring new groups with insufficient history: {ignored_groups}")
         else:
             print("   No new groups found.")
 
-        # Filter the dataframe to only include groups the model knows about or can handle
+        # Filter the dataframe to only include groups the model now knows about
         groups_to_process = known_groups + valid_new_groups
         evaluation_df = new_df[new_df[cfg_data['series_column']].isin(groups_to_process)].copy()
 
@@ -152,7 +153,7 @@ def evaluate_model():
 
         print(f"4. Generating forecast for the next {cfg_model['prediction_horizon']}-day period...")
         predictions_output, index_df = best_tft_model.predict(
-            evaluation_df,  # Pass the dataframe directly for efficient prediction
+            evaluation_df,  # Pass the dataframe directly. The model will use its updated encoder.
             mode="raw",
             return_index=True,
             trainer_kwargs=dict(accelerator=cfg_eval['accelerator']),
