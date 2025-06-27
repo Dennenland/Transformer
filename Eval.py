@@ -114,8 +114,8 @@ def evaluate_model():
         print("2b. Handling new groups in evaluation data...")
         encoder_length = best_tft_model.hparams.max_encoder_length
         
-        # --- FIX: Access encoders directly from the model's hparams ---
-        group_encoder = best_tft_model.hparams.dataset_parameters['encoders'][cfg_data['series_column']]
+        # --- FIX: Access encoders directly from the loaded model object itself ---
+        group_encoder = best_tft_model.encoders[cfg_data['series_column']]
         known_groups = list(group_encoder.classes_)
         
         all_eval_groups = new_df[cfg_data['series_column']].unique()
