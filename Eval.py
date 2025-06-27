@@ -45,7 +45,7 @@ def calculate_metrics(df, group_by_col=None):
     df['predicted'] = pd.to_numeric(df['predicted'], errors='coerce')
     df.dropna(subset=['actual', 'predicted'], inplace=True)
     if group_by_col:
-        for group, group_df in df.groupby(group_by_col):
+        for group, group_df in df.groupby(group_by_col, observed=True):
             if group_df.empty: continue
             mape_df = group_df[group_df['actual'] != 0]
             r2_val = r2_score(group_df['actual'], group_df['predicted']) if len(group_df) > 1 else np.nan
@@ -99,74 +99,79 @@ def evaluate_model():
         new_df = pd.read_csv(cfg_data['eval_file_path'], sep=';', decimal=',')
         new_df[cfg_data['time_column']] = pd.to_datetime(new_df[cfg_data['time_column']])
 
-        # --- FIX: Add cyclical features to the evaluation data ---
         print("2a. Enhancing evaluation data with cyclical datetime features...")
         new_df = add_cyclical_datetime_features(new_df, datetime_col=cfg_data['time_column'])
         print("    Cyclical features added.")
-        # --- END OF FIX ---
         
-        new_df[cfg_data['series_column']] = new_df[cfg_data['series_column']].astype(str).astype("category")
+        new_df[cfg_data['series_column']] = new_df[cfg_data['series_column']].astype(str)
         min_date = new_df[cfg_data['time_column']].min()
         new_df['time_idx'] = (new_df[cfg_data['time_column']] - min_date).dt.days
         for col in cfg_data['target_columns']:
             new_df[col] = pd.to_numeric(new_df[col], errors='coerce').astype("float32")
         new_df[cfg_data['target_columns']] = new_df[cfg_data['target_columns']].fillna(0.0)
 
-        # =================================================================================
-        # --- Filter data to keep only recent history needed for prediction ---
-        # =================================================================================
-        print("3. Filtering data to reduce memory and processing time...")
+        # --- FIX: Handle new groups by checking for sufficient history ---
+        print("2b. Handling new groups in evaluation data...")
         encoder_length = best_tft_model.dataset_parameters['max_encoder_length']
-        required_history_length = encoder_length + cfg_model['prediction_horizon']
+        known_groups = list(best_tft_model.dataset_parameters["static_categoricals_encoders"][cfg_data['series_column']].classes_)
+        
+        all_eval_groups = new_df[cfg_data['series_column']].unique()
+        new_groups = [group for group in all_eval_groups if group not in known_groups]
+        
+        valid_new_groups = []
+        ignored_new_groups = []
 
-        last_time_idx_df = new_df.groupby(cfg_data['series_column'])['time_idx'].max().to_frame(
-            'max_time_idx').reset_index()
-        new_df = new_df.merge(last_time_idx_df, on=cfg_data['series_column'])
+        if new_groups:
+            print(f"   Found new groups not in training data: {new_groups}. Checking for sufficient history...")
+            for group in new_groups:
+                group_history_length = len(new_df[new_df[cfg_data['series_column']] == group])
+                if group_history_length >= encoder_length:
+                    valid_new_groups.append(group)
+                else:
+                    ignored_new_groups.append(group)
+            
+            if valid_new_groups:
+                print(f"   OK to proceed with new groups: {valid_new_groups}")
+                # Add valid new groups to the model's known categories in-memory
+                updated_known_groups = known_groups + valid_new_groups
+                best_tft_model.dataset_parameters["static_categoricals_encoders"][cfg_data['series_column']].classes_ = updated_known_groups
+            
+            if ignored_new_groups:
+                print(f"   WARNING: Ignoring new groups with insufficient history (need >= {encoder_length} records): {ignored_new_groups}")
 
-        cutoff = new_df['max_time_idx'] - required_history_length
-        filtered_df = new_df[new_df['time_idx'] >= cutoff].copy()
+        else:
+            print("   No new groups found. All groups in evaluation data are known to the model.")
 
-        filtered_df.drop(columns=['max_time_idx'], inplace=True)
-
-        print(f"   Original data size: {len(new_df)} rows.")
-        print(f"   Filtered data size: {len(filtered_df)} rows.")
-        # =================================================================================
+        # Filter the dataframe to only include known groups and valid new groups
+        groups_to_process = known_groups + valid_new_groups
+        evaluation_df = new_df[new_df[cfg_data['series_column']].isin(groups_to_process)].copy()
+        evaluation_df[cfg_data['series_column']] = evaluation_df[cfg_data['series_column']].astype("category")
+        
+        # --- END OF FIX ---
 
         if is_debug:
             print("   Debug Mode: Evaluating model trained on a limited number of batches.")
 
-        print("4a. Reconstructing dataset from model parameters...")
-        # This will now work because filtered_df contains the required cyclical features
-        reference_dataset = TimeSeriesDataSet.from_parameters(
-            best_tft_model.dataset_parameters, filtered_df
-        )
-        print("   Reference dataset created.")
-
-        prediction_dataloader = reference_dataset.to_dataloader(
-            train=False,
-            batch_size=cfg_train['val_batch_size'] * 2,
-            num_workers=os.cpu_count()
-        )
-
-        print(f"4b. Generating forecast for the next {cfg_model['prediction_horizon']}-day period...")
-        predictions = best_tft_model.predict(
-            prediction_dataloader,
-            trainer_kwargs=dict(accelerator=cfg_eval['accelerator']),
+        print(f"4. Generating forecast for the next {cfg_model['prediction_horizon']}-day period...")
+        predictions_output, index_df = best_tft_model.predict(
+            evaluation_df,  # Use the filtered dataframe
             mode="raw",
-            return_x=True
+            return_index=True,
+            trainer_kwargs=dict(accelerator=cfg_eval['accelerator']),
+            batch_size=cfg_train['val_batch_size'] * 2
         )
+        print("   Forecasts generated.")
 
-        prediction_list = predictions.output['prediction']
+        prediction_list = predictions_output['prediction']
         if not prediction_list or prediction_list[0].size(0) == 0:
             print("\n--- WARNING: No predictions were generated. ---")
             sys.exit(0)
 
         print("\n5. Reshaping data and calculating metrics...")
         median_prediction_idx = 3
-        actuals_lookup_df = filtered_df.set_index([cfg_data['series_column'], 'time_idx'])
+        actuals_lookup_df = evaluation_df.set_index([cfg_data['series_column'], 'time_idx'])
         results_list = []
 
-        index_df = prediction_dataloader.dataset.x_to_index(predictions.x)
         names = index_df[cfg_data['series_column']]
         last_encoder_time_idx = index_df['time_idx']
 
@@ -205,10 +210,12 @@ def evaluate_model():
 
         metrics_per_customer = calculate_metrics(results_df, group_by_col=cfg_data['series_column'])
         metrics_per_target_group = calculate_metrics(results_df, group_by_col='target_group')
+        metrics_per_prediction_day = calculate_metrics(results_df, group_by_col='prediction_day')
         overall_metrics = calculate_metrics(results_df)
 
         print("\n--- METRICS PER TARGET GROUP ---\n", metrics_per_target_group.to_string())
         print("\n--- METRICS PER CUSTOMER ---\n", metrics_per_customer.to_string())
+        print("\n--- METRICS PER PREDICTION DAY ---\n", metrics_per_prediction_day.to_string())
         print("\n--- OVERALL METRICS ---\n", overall_metrics.to_string())
 
         output_excel_path = cfg_eval['output_report_name']
@@ -217,11 +224,12 @@ def evaluate_model():
             overall_metrics.to_excel(writer, sheet_name="Overall_Metrics")
             metrics_per_customer.to_excel(writer, sheet_name="Metrics_Per_Customer")
             metrics_per_target_group.to_excel(writer, sheet_name="Metrics_Per_Target_Group")
+            metrics_per_prediction_day.to_excel(writer, sheet_name="Metrics_Per_Prediction_Day")
 
             target_col_categorical = pd.CategoricalDtype(cfg_data['target_columns'], ordered=True)
             results_df['target_variable'] = results_df['target_variable'].astype(target_col_categorical)
 
-            grouped_customers = results_df.groupby(cfg_data['series_column'])
+            grouped_customers = results_df.groupby(cfg_data['series_column'], observed=True)
             for customer_name, customer_df in tqdm(grouped_customers, desc="Writing Customer Sheets"):
                 pivot_df = customer_df.pivot_table(
                     index='forecast_date', columns='target_variable', values=['actual', 'predicted']
