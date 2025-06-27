@@ -107,16 +107,15 @@ def evaluate_model():
         min_date = new_df[cfg_data['time_column']].min()
         new_df['time_idx'] = (new_df[cfg_data['time_column']] - min_date).dt.days
         for col in cfg_data['target_columns']:
-            # --- FIX: Changed df to new_df ---
             new_df[col] = pd.to_numeric(new_df[col], errors='coerce').astype("float32")
         new_df[cfg_data['target_columns']] = new_df[cfg_data['target_columns']].fillna(0.0)
 
         # --- FIX: Handle new groups by checking for sufficient history ---
         print("2b. Handling new groups in evaluation data...")
-        encoder_length = best_tft_model.dataset_parameters['max_encoder_length']
+        encoder_length = best_tft_model.hparams.max_encoder_length
         
-        # --- FIX: Access encoders directly from the model's own attributes ---
-        group_encoder = best_tft_model.static_categoricals_encoders[cfg_data['series_column']]
+        # --- FIX: Access encoders directly from the model's hparams ---
+        group_encoder = best_tft_model.hparams.dataset_parameters['encoders'][cfg_data['series_column']]
         known_groups = list(group_encoder.classes_)
         
         all_eval_groups = new_df[cfg_data['series_column']].unique()
